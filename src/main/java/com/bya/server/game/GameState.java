@@ -32,6 +32,9 @@ public class GameState extends GameSubject {
 
     public synchronized void processHeroAttack(HeroAttackData attackData) {
         if (isGameOver) return;
+
+        System.out.println("LOG: Герой '" + attackData.characterName + "' атакует, его здоровье: " + attackData.heroHp);
+
         state.takeDamage(this, attackData);
 
         AttackConfirmationData confirmationData = new AttackConfirmationData();
@@ -61,6 +64,14 @@ public class GameState extends GameSubject {
         attackEvent.eventType = "villainAttack";
         attackEvent.data = attackStrategy.executeAttack(this.villainHp);
         notifyObservers(attackEvent);
+    }
+
+    public synchronized void triggerShockwaveImpact() {
+        if (isGameOver) return;
+        ServerEvent impactEvent = new ServerEvent();
+        impactEvent.eventType = "shockwaveImpact";
+        impactEvent.data = null;
+        notifyObservers(impactEvent);
     }
 
     public int getVillainHp() {

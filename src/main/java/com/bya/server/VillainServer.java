@@ -3,9 +3,11 @@ package com.bya.server;
 import com.bya.model.*;
 import com.bya.server.game.GameState;
 import com.bya.server.game.observer.GameObserver;
+import com.bya.server.ui.VillainGUI;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 
+import javax.swing.*;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -17,26 +19,34 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.util.Enumeration;
-import java.util.Scanner;
 
 public class VillainServer {
 
     private static final Gson gson = new Gson();
 
-    public static void main(String[] args) throws IOException {
-        System.out.println("Сервер Злодея запущен.");
-        printServerIp();
+    public static void main(String[] args) {
+        startNetworkThread();
+        SwingUtilities.invokeLater(VillainGUI::new);
+    }
 
-        GameObserver consoleLogger = createConsoleLogger();
-        GameState.getInstance().addObserver(consoleLogger);
+    private static void startNetworkThread() {
+        new Thread(() -> {
+            try {
+                System.out.println("Сервер Злодея запущен.");
+                printServerIp();
 
-        startConsoleInput();
+                GameObserver consoleLogger = createConsoleLogger();
+                GameState.getInstance().addObserver(consoleLogger);
 
-        ServerSocket serverSocket = new ServerSocket(12345);
-        while (true) {
-            Socket clientSocket = serverSocket.accept();
-            new ClientHandler(clientSocket);
-        }
+                ServerSocket serverSocket = new ServerSocket(12345);
+                while (true) {
+                    Socket clientSocket = serverSocket.accept();
+                    new ClientHandler(clientSocket);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     private static GameObserver createConsoleLogger() {
@@ -55,6 +65,9 @@ public class VillainServer {
                         System.out.println("<- Злодей атакует! Урон: " + attack.damageDealt);
                     }
                     break;
+                case "shockwaveImpact":
+                    System.out.println("LOG: Ударная волна достигла цели, отправляю событие героям.");
+                    break;
                 case "gameOver":
                     if (data instanceof GameOverData) {
                         GameOverData gameOver = (GameOverData) data;
@@ -63,18 +76,6 @@ public class VillainServer {
                     break;
             }
         };
-    }
-
-    private static void startConsoleInput() {
-        new Thread(() -> {
-            Scanner scanner = new Scanner(System.in);
-            System.out.println("Введите 'attack' чтобы атаковать героев.");
-            while (scanner.hasNextLine()) {
-                if ("attack".equalsIgnoreCase(scanner.nextLine())) {
-                    GameState.getInstance().processVillainAttack();
-                }
-            }
-        }).start();
     }
 
     private static class ClientHandler extends Thread implements GameObserver {
@@ -97,6 +98,8 @@ public class VillainServer {
                         ClientRequest request = gson.fromJson(json, ClientRequest.class);
                         if ("heroAttack".equals(request.action)) {
                             GameState.getInstance().processHeroAttack(request.data);
+                        } else if ("reportHealth".equals(request.action)) {
+                            System.out.println("LOG: Получено здоровье от '" + request.data.characterName + "': " + request.data.heroHp);
                         }
                     } catch (JsonSyntaxException e) {
                         System.out.println("Получен неверный JSON.");
