@@ -1,7 +1,8 @@
 package com.bya.server;
 
-import com.bya.model.ClientRequest;
-import com.bya.model.ServerEvent;
+import com.bya.model.*;
+import com.bya.server.game.GameState;
+import com.bya.server.game.observer.GameObserver;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 
@@ -15,32 +16,53 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
-import java.util.ArrayList;
 import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Scanner;
 
 public class VillainServer {
 
-    private static int villainHp = 100;
-    private static boolean isGameOver = false;
-    private static final List<PrintWriter> clientWriters = new ArrayList<>();
     private static final Gson gson = new Gson();
 
     public static void main(String[] args) throws IOException {
         System.out.println("Сервер Злодея запущен.");
         printServerIp();
+
+        GameObserver consoleLogger = createConsoleLogger();
+        GameState.getInstance().addObserver(consoleLogger);
+
         startConsoleInput();
 
         ServerSocket serverSocket = new ServerSocket(12345);
         while (true) {
             Socket clientSocket = serverSocket.accept();
-            PrintWriter writer = new PrintWriter(clientSocket.getOutputStream(), true);
-            clientWriters.add(writer);
-            new ClientHandler(clientSocket).start();
+            new ClientHandler(clientSocket);
         }
+    }
+
+    private static GameObserver createConsoleLogger() {
+        return event -> {
+            Object data = event.data;
+            switch (event.eventType) {
+                case "attackConfirmation":
+                    if (data instanceof AttackConfirmationData) {
+                        AttackConfirmationData confirmation = (AttackConfirmationData) data;
+                        System.out.println("-> Герой атаковал. Здоровье злодея: " + confirmation.villainHp);
+                    }
+                    break;
+                case "villainAttack":
+                    if (data instanceof VillainAttackData) {
+                        VillainAttackData attack = (VillainAttackData) data;
+                        System.out.println("<- Злодей атакует! Урон: " + attack.damageDealt);
+                    }
+                    break;
+                case "gameOver":
+                    if (data instanceof GameOverData) {
+                        GameOverData gameOver = (GameOverData) data;
+                        System.out.println("!!! ИГРА ОКОНЧЕНА. Победитель: " + gameOver.winner + " !!!");
+                    }
+                    break;
+            }
+        };
     }
 
     private static void startConsoleInput() {
@@ -48,98 +70,48 @@ public class VillainServer {
             Scanner scanner = new Scanner(System.in);
             System.out.println("Введите 'attack' чтобы атаковать героев.");
             while (scanner.hasNextLine()) {
-                if (isGameOver) {
-                    System.out.println("Игра окончена. Новые команды не принимаются.");
-                    break;
-                }
-                String command = scanner.nextLine();
-                if ("attack".equalsIgnoreCase(command)) {
-                    int damage = 15;
-                    System.out.println("Злодей атакует героев, нанося " + damage + " урона!");
-
-                    ServerEvent villainAttackEvent = new ServerEvent();
-                    villainAttackEvent.eventType = "villainAttack";
-
-                    Map<String, Object> data = new HashMap<>();
-                    data.put("damageDealt", damage);
-                    data.put("villainHp", villainHp);
-                    villainAttackEvent.data = data;
-
-                    broadcast(villainAttackEvent);
+                if ("attack".equalsIgnoreCase(scanner.nextLine())) {
+                    GameState.getInstance().processVillainAttack();
                 }
             }
         }).start();
     }
 
-    private static void broadcast(ServerEvent event) {
-        String jsonEvent = gson.toJson(event);
-        for (PrintWriter writer : clientWriters) {
-            writer.println(jsonEvent);
-        }
-    }
-
-    private static class ClientHandler extends Thread {
+    private static class ClientHandler extends Thread implements GameObserver {
         private final Socket socket;
+        private final PrintWriter writer;
 
-        public ClientHandler(Socket socket) {
+        public ClientHandler(Socket socket) throws IOException {
             this.socket = socket;
+            this.writer = new PrintWriter(socket.getOutputStream(), true);
+            GameState.getInstance().addObserver(this);
+            this.start();
         }
 
         @Override
         public void run() {
-            try {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
                 String json;
                 while ((json = reader.readLine()) != null) {
-                    processClientRequest(json, this);
+                    try {
+                        ClientRequest request = gson.fromJson(json, ClientRequest.class);
+                        if ("heroAttack".equals(request.action)) {
+                            GameState.getInstance().processHeroAttack(request.data);
+                        }
+                    } catch (JsonSyntaxException e) {
+                        System.out.println("Получен неверный JSON.");
+                    }
                 }
             } catch (IOException e) {
                 System.out.println("Герой отключился.");
+            } finally {
+                GameState.getInstance().removeObserver(this);
             }
         }
 
-        public void send(ServerEvent event) {
-            try {
-                PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
-                writer.println(gson.toJson(event));
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private static synchronized void processClientRequest(String json, ClientHandler handler) {
-        if (isGameOver) {
-            return;
-        }
-
-        try {
-            ClientRequest request = gson.fromJson(json, ClientRequest.class);
-            if ("heroAttack".equals(request.action)) {
-                villainHp -= request.data.attackDamage;
-                System.out.println(request.data.characterName + " атаковал с помощью " + request.data.weaponType + ". Здоровье злодея: " + villainHp);
-
-                ServerEvent response = new ServerEvent();
-                response.eventType = "attackConfirmation";
-                Map<String, Object> data = new HashMap<>();
-                data.put("message", "Вы успешно атаковали злодея!");
-                data.put("villainHp", villainHp < 0 ? 0 : villainHp);
-                response.data = data;
-                handler.send(response);
-
-                if (villainHp <= 0) {
-                    isGameOver = true;
-                    System.out.println("Злодей повержен! Игра окончена.");
-                    ServerEvent gameOverEvent = new ServerEvent();
-                    gameOverEvent.eventType = "gameOver";
-                    Map<String, Object> gameOverData = new HashMap<>();
-                    gameOverData.put("winner", "Герои");
-                    gameOverEvent.data = gameOverData;
-                    broadcast(gameOverEvent);
-                }
-            }
-        } catch (JsonSyntaxException e) {
-            System.out.println("Получен неверный JSON: " + json);
+        @Override
+        public void update(ServerEvent event) {
+            writer.println(gson.toJson(event));
         }
     }
 
